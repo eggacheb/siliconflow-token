@@ -86,6 +86,11 @@
             white-space: pre-wrap;
         }
 
+        #zeroBalanceResults {
+            border-left: 4px solid #f1c40f;
+            white-space: pre-wrap;
+        }
+
         #invalidResults {
             border-left: 4px solid #e74c3c;
         }
@@ -145,8 +150,27 @@
             margin-top: 10px;
         }
 
+        .copy-button.zero-balance {
+            background-color: #f39c12;
+        }
+
         .copy-button:hover {
             background-color: #2ecc71;
+        }
+
+        .copy-button.zero-balance:hover {
+            background-color: #f1c40f;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .button-group .copy-button {
+            flex: 1;
+            margin-top: 0;
         }
     </style>
 </head>
@@ -154,15 +178,37 @@
 <body>
     <div class="container">
         <h1>硅基流动Token有效性检测</h1>
-        <textarea id="tokens" placeholder="请在此输入sk token，每行一个"></textarea>
+        <div style="margin-bottom: 20px;">
+            <label for="balanceThreshold" style="display: block; margin-bottom: 8px;">最低余额阈值：</label>
+            <input type="number" id="balanceThreshold" value="0.5" min="0" step="0.1"
+                style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; width: 120px;">
+        </div>
+        <textarea id="tokens" placeholder="请输入sk token，支持每行一个或用逗号分隔"></textarea>
         <button id="checkButton" onclick="checkTokens()">检测账号</button>
         <div class="results">
-            <h2>有效账号 (包含余额)</h2>
+            <h2>有余额账号</h2>
             <div id="validResults" class="results-content"></div>
-            <button id="copyButton" class="copy-button" onclick="copyValidTokens()"
-                style="display: none;">复制所有有效账号</button>
-            <h2>无效账号</h2>
+            <div class="button-group">
+                <button id="copyButton" class="copy-button" onclick="copyTokens('valid')"
+                    style="display: none;">复制有余额账号</button>
+                <button id="copyCommaButton" class="copy-button" onclick="copyTokensWithComma('valid')"
+                    style="display: none;">复制有余额账号(逗号连接)</button>
+            </div>
+
+            <h2>零余额账号</h2>
+            <div id="zeroBalanceResults" class="results-content"></div>
+            <div class="button-group">
+                <button id="copyZeroButton" class="copy-button zero-balance" onclick="copyTokens('zero')"
+                    style="display: none;">复制零余额账号</button>
+                <button id="copyZeroCommaButton" class="copy-button zero-balance" onclick="copyTokensWithComma('zero')"
+                    style="display: none;">复制零余额账号(逗号连接)</button>
+            </div>
+
+            <h2>失效账号</h2>
             <div id="invalidResults" class="results-content"></div>
+
+            <h2>重复账号</h2>
+            <div id="duplicateResults" class="results-content" style="border-left: 4px solid #9b59b6;"></div>
         </div>
     </div>
 
@@ -171,28 +217,94 @@
             const tokensTextarea = document.getElementById('tokens');
             const checkButton = document.getElementById('checkButton');
             const validResults = document.getElementById('validResults');
+            const zeroBalanceResults = document.getElementById('zeroBalanceResults');
             const invalidResults = document.getElementById('invalidResults');
+            const duplicateResults = document.getElementById('duplicateResults');
             const copyButton = document.getElementById('copyButton');
+            const copyZeroButton = document.getElementById('copyZeroButton');
+            const copyCommaButton = document.getElementById('copyCommaButton');
+            const copyZeroCommaButton = document.getElementById('copyZeroCommaButton');
 
-            const tokens = tokensTextarea.value.split('\n').filter(token => token.trim() !== '');
+            const inputText = tokensTextarea.value.trim();
+            let tokens = [];
+            let tokenCount = new Map();
+            let duplicateTokens = new Set();
+
+            // 先将输入按换行符分割，处理每一行
+            const lines = inputText.split('\n');
+
+            // 处理每一行，如果行内有逗号则按逗号分割，同时记录token出现次数
+            lines.forEach(line => {
+                const trimmedLine = line.trim();
+                if (trimmedLine) {
+                    const lineTokens = trimmedLine.split(',')
+                        .map(t => t.trim())
+                        .filter(t => t !== '');
+                    lineTokens.forEach(token => {
+                        tokenCount.set(token, (tokenCount.get(token) || 0) + 1);
+                        if (tokenCount.get(token) > 1) {
+                            duplicateTokens.add(token);
+                        }
+                    });
+                    tokens = tokens.concat(lineTokens);
+                }
+            });
+
+            // 移除重复的token，只保留一个
+            tokens = [...new Set(tokens)].filter(token => token !== '');
 
             if (tokens.length === 0) {
                 alert('请输入至少一个token');
                 return;
             }
 
+            // 显示重复的tokens
+            duplicateResults.textContent = duplicateTokens.size > 0
+                ? `发现 ${duplicateTokens.size} 个重复token：\n${[...duplicateTokens].join('\n')}，已处理。`
+                : '没有发现重复的token';
+
             checkButton.disabled = true;
             checkButton.innerHTML = '<span class="loader"></span>检测中...';
             validResults.textContent = '';
+            zeroBalanceResults.textContent = '';
             invalidResults.innerHTML = '';
             copyButton.style.display = 'none';
+            copyZeroButton.style.display = 'none';
+            copyCommaButton.style.display = 'none';
+            copyZeroCommaButton.style.display = 'none';
 
             const results = await Promise.all(tokens.map(checkToken));
 
-            const validTokens = results.filter(r => r.isValid).map(r => `${r.token} (余额: ${r.balance})`);
-            const invalidTokens = results.filter(r => !r.isValid);
+            const validTokens = [];
+            const zeroBalanceTokens = [];
+            const invalidTokens = [];
 
-            validResults.textContent = validTokens.join('\n');
+            results.forEach(result => {
+                if (!result.isValid) {
+                    if (result.message === 'Sorry, your account balance is insufficient') {
+                        zeroBalanceTokens.push(`${result.token} (余额: 0)`);
+                    } else {
+                        invalidTokens.push(result);
+                    }
+                } else {
+                    const balance = parseFloat(result.balance);
+                    const threshold = parseFloat(document.getElementById('balanceThreshold').value) || 0;
+                    if (balance >= threshold) {
+                        validTokens.push({
+                            token: result.token,
+                            balance: balance
+                        });
+                    } else {
+                        zeroBalanceTokens.push(`${result.token} (余额: ${result.balance})`);
+                    }
+                }
+            });
+
+            // 对有余额的账号进行排序（从大到小）
+            validTokens.sort((a, b) => b.balance - a.balance);
+            // 转换为显示格式
+            validResults.textContent = validTokens.map(item => `${item.token} (余额: ${item.balance})`).join('\n');
+            zeroBalanceResults.textContent = zeroBalanceTokens.join('\n');
 
             invalidTokens.forEach(result => {
                 const div = document.createElement('div');
@@ -208,6 +320,11 @@
 
             if (validTokens.length > 0) {
                 copyButton.style.display = 'block';
+                copyCommaButton.style.display = 'block';
+            }
+            if (zeroBalanceTokens.length > 0) {
+                copyZeroButton.style.display = 'block';
+                copyZeroCommaButton.style.display = 'block';
             }
 
             checkButton.disabled = false;
@@ -239,7 +356,7 @@
                         'Accept-Language': 'zh-CN'
                     },
                     body: JSON.stringify({
-                        "model": "Qwen/Qwen2.5-72B-Instruct",
+                        "model": "Qwen/Qwen2.5-7B-Instruct",
                         "messages": [
                             {
                                 "role": "user",
@@ -270,16 +387,28 @@
             }
         }
 
-        function copyValidTokens() {
-            const validResults = document.getElementById('validResults');
-            const tokens = validResults.textContent.split('\n').map(line => line.split(' ')[0]);
+        function copyTokens(type) {
+            const resultsDiv = type === 'valid' ? document.getElementById('validResults') : document.getElementById('zeroBalanceResults');
+            const tokens = resultsDiv.textContent.split('\n').map(line => line.split(' ')[0]);
             const textArea = document.createElement('textarea');
             textArea.value = tokens.join('\n');
             document.body.appendChild(textArea);
             textArea.select();
             document.execCommand('copy');
             document.body.removeChild(textArea);
-            alert('有效账号已复制到剪贴板');
+            alert(type === 'valid' ? '有余额账号已复制到剪贴板' : '零余额账号已复制到剪贴板');
+        }
+
+        function copyTokensWithComma(type) {
+            const resultsDiv = type === 'valid' ? document.getElementById('validResults') : document.getElementById('zeroBalanceResults');
+            const tokens = resultsDiv.textContent.split('\n').map(line => line.split(' ')[0]);
+            const textArea = document.createElement('textarea');
+            textArea.value = tokens.join(',');
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            alert(type === 'valid' ? '有余额账号已复制到剪贴板(逗号连接)' : '零余额账号已复制到剪贴板(逗号连接)');
         }
     </script>
 </body>
